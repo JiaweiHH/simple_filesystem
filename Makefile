@@ -9,4 +9,4 @@ mkfs:
 	gcc mkfs.simple.c -o mkfs.simple
 
 clean:
-	rm -rf *.ko *.o *.mod.o *.mod.c *.symvers .*.cmd .tmp_versions mkfs.naive
+	rm -rf *.ko *.o *.mod.o *.mod.c *.symvers .*.cmd .tmp_versions mkfs.simple
