@@ -1,23 +1,34 @@
 # 学习往Linux添加文件系统
 
-## 挂载
+## 设计
 
-**创建挂载目录和设备，格式化设备文件**
+目前最简单的实现方式，之后可以改进
+
++------------+-------------+-------------------+
+| superblock | data blocks | inode blocks      | 
++------------+-------------+-------------------+
+
+## 编译和运行
+
+编译模块：
 
 ```shell
-mkdir -p test
-dd if=/dev/zero of=test.img bs=1M count=50
-./mkfs.simple ./test.img
+$ make
+$ make insmod simplefs.ko
 ```
 
-**编译挂载**
+创建挂载点目录，格式化设备文件
 
 ```shell
-sudo ./mount.sh
+$ mkdir -p test
+$ dd if=/dev/zero of=test.img bs=1M count=50
+$ make mkfs
+$ ./mkfs.simple ./test.img
 ```
 
-**umount**
+挂载和卸载文件系统
 
 ```shell
-sudo ./umount.sh
+$ sudo mount -t simplefs -o loop ./test.img test
+$ sudo umount -v test
 ```
