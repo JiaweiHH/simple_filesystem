@@ -29,12 +29,15 @@ struct simple_superblock{
 };
 
 struct simple_inode{
-    int i_ino;
-    int i_type;
-    unsigned short i_blockmap[SIMPLE_PER_FILE_BLOCK];
+    int i_ino;  //inode编号
+    int i_type;  //文件类型，目录或普通文件
+    int dir_child_count;  //节点下的文件数量
+    // unsigned short i_blockmap[SIMPLE_PER_FILE_BLOCK];  //暂时不用
+    int data_block_num;  //目前一个文件只有一个数据块
 };
 
+//目录项
 struct simple_dir_record{
-    int i_ino;
+    int i_ino;  
     char filename[SIMPLE_FILENAME_MAX];
 };

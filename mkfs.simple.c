@@ -24,7 +24,7 @@ int main(int argc, char *argv[]){
 	sb->s_magic = SIMPLE_MAGIC;
 	sb->s_blockcount = 1 + 32 + 1024;
 	sb->s_inodecount = 1;
-	sb->s_blockmap[0] = 1;
+	sb->s_blockmap[0] = 1;  //根inode指向的数据块
 	write_to_block(0, sb, sizeof(struct simple_superblock));
 	free(sb);
 
@@ -37,8 +37,10 @@ int main(int argc, char *argv[]){
 	//写根 inode 的数据
 	struct simple_inode *root = malloc(sizeof(struct simple_inode));
 
-	root->i_ino = SIMPLE_INODE_BLOCK_BASE;
+	root->i_ino = 0;
 	root->i_type = SIMPLE_FILE_TYPE_DIR;
+	root->dir_child_count = 0;
+	root->data_block_num = 1;
 	write_to_block(SIMPLE_INODE_BLOCK_BASE, root, sizeof(struct simple_inode));
 	free(root);
 
