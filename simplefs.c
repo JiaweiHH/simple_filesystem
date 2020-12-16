@@ -13,10 +13,8 @@ static struct dentry *simplefs_lookup(struct inode *parent, struct dentry *child
 static int simplefs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode);
 static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool excl);
 
-static int simple_iterate(struct file *filp, struct dir_context *ctx){
-    printk("iterate called\n");
-    return 0;
-}
+/* dir operations */
+static int simplefs_iterate(struct file *filp, struct dir_context *ctx);
 
 //普通文件操作
 static struct file_operations simple_fops;
@@ -32,8 +30,45 @@ static struct super_operations simple_sops;
 //目录操作
 static struct file_operations simple_dops = {
     .owner = THIS_MODULE, 
-    // .iterate = 
+    .iterate = simplefs_iterate,
 };
+
+/* ==========dir_operations========== */
+static int simplefs_iterate(struct file *filp, struct dir_context *ctx){
+    printk("iterate called\n");
+
+    struct inode *inode = filp->f_inode;
+    struct super_block *sb = inode->i_sb;
+    struct simple_inode *simple_inode = (struct simple_inode *)inode->i_private;
+
+    //ctx的指针需要从0开始
+    if(ctx->pos)
+        return 0;
+
+    //判断是不是目录
+    if(simple_inode->i_type != SIMPLE_FILE_TYPE_DIR){
+        printk("不是一个目录\n");
+        return -ENOTDIR;
+    }
+
+    //获取data block地址
+    struct buffer_head *bh = sb_bread(sb, SIMPLE_DATA_BLOCK_BASE + simple_inode->data_block_num);
+    struct simple_dir_record *dir_record = (struct simple_dir_record *)bh->b_data;
+
+    //遍历目录项
+    int i;
+    for(i = 0; i < simple_inode->dir_child_count; ++i){
+        //用ino和文件名填充 ctx
+        dir_emit(ctx, dir_record->filename, SIMPLE_FILENAME_MAX, dir_record->i_ino, DT_UNKNOWN);
+        //ctx指针移动
+        ctx->pos += sizeof(struct simple_dir_record);
+        dir_record++;
+    }
+
+    brelse(bh);
+
+    return 0;
+}
 
 /* ==========inode_operations========== */
 
@@ -55,13 +90,14 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
     //分配磁盘存储inode并设置编号
     struct simple_inode *simple_inode = kmem_cache_alloc(simplefs_inode_cache, GFP_KERNEL);
     inode->i_private = simple_inode;
-    simple_inode->i_ino = inode->i_ino;
+    simple_inode->i_ino = inode->i_ino;  //inode 编号
+    simple_inode->i_type = SIMPLE_FILE_TYPE_FILE;
 
     //获取data block
     int i;
     for(i = 0; i < SIMPLE_DATA_BLOCK_COUNT; ++i){
         if(simple_sb->s_blockmap[i] == 0){
-            simple_inode->data_block_num = i;
+            simple_inode->data_block_num = i; //设置数据块编号
             simple_sb->s_blockmap[i] = 1;
             break;
         }
