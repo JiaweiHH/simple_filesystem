@@ -17,6 +17,7 @@
 #define SIMPLE_PER_FILE_BLOCK 8
 #define SIMPLE_FILE_TYPE_DIR 1
 #define SIMPLE_FILE_TYPE_FILE 2
+#define SIMPLE_DIRSIZE_MAX 128
 
 #define CURRENT_TIME (current_kernel_time())
 
@@ -39,6 +40,6 @@ struct simple_inode{
 
 //目录项
 struct simple_dir_record{
-    int i_ino;  
+    int i_ino;
     char filename[SIMPLE_FILENAME_MAX];
 };

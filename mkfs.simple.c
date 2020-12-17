@@ -40,7 +40,7 @@ int main(int argc, char *argv[]){
 	root->i_ino = 0;
 	root->i_type = SIMPLE_FILE_TYPE_DIR;
 	root->dir_child_count = 0;
-	root->data_block_num = 1;
+	root->data_block_num = 0;
 	root->file_size = 4096;
 	write_to_block(SIMPLE_INODE_BLOCK_BASE, root, sizeof(struct simple_inode));
 	free(root);

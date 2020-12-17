@@ -83,6 +83,7 @@ static ssize_t simplefs_write(struct file * filp, const char __user * buf, size_
     struct inode *inode = filp->f_inode;
     struct super_block *sb = inode->i_sb;
     struct simple_inode *simple_inode = (struct simple_inode *)inode->i_private;  //内存中的磁盘上的 inode 结构体
+
     struct buffer_head *bh = sb_bread(sb, simple_inode->data_block_num + SIMPLE_DATA_BLOCK_BASE);
     char *buffer = (char *)bh->b_data;  //buffer 为指向data block的指针
 
@@ -105,6 +106,9 @@ static ssize_t simplefs_write(struct file * filp, const char __user * buf, size_
     mark_buffer_dirty(bh);  //标记buffer_head为脏
     sync_dirty_buffer(bh);  //往磁盘写入脏数据
 
+    //更新 inode 中的文件大小属性
+    i_size_write(inode, *ppos);
+
     brelse(bh);
     return len;
 }
@@ -116,13 +120,10 @@ static ssize_t simplefs_write(struct file * filp, const char __user * buf, size_
  * filp: 目录文件, ctx: 存储目录项内容
  */
 static int simplefs_iterate(struct file *filp, struct dir_context *ctx){
-    printk("iterate called\n");
-
     struct inode *inode = filp->f_inode;
     struct super_block *sb = inode->i_sb;
     struct simple_inode *simple_inode = (struct simple_inode *)inode->i_private;
 
-    //ctx的指针需要从0开始
     if(ctx->pos){
         return 0;
     }
@@ -133,6 +134,12 @@ static int simplefs_iterate(struct file *filp, struct dir_context *ctx){
         return -ENOTDIR;
     }
 
+    //TODO: 目前还有问题。添加 . 和 ..
+    // if(!dir_emit_dots(filp, ctx)){
+    //     printk(". and .. add error\n");
+    //     return 0;
+    // }
+
     //获取data block地址
     struct buffer_head *bh = sb_bread(sb, SIMPLE_DATA_BLOCK_BASE + simple_inode->data_block_num);
     struct simple_dir_record *dir_record = (struct simple_dir_record *)bh->b_data;
@@ -140,9 +147,9 @@ static int simplefs_iterate(struct file *filp, struct dir_context *ctx){
     //遍历目录项
     int i;
     for(i = 0; i < simple_inode->dir_child_count; ++i){
-        //用ino和文件名填充 ctx
+        //填充目录项
+        printk("filename: %s, ino: %d\n", dir_record->filename, dir_record->i_ino);
         dir_emit(ctx, dir_record->filename, SIMPLE_FILENAME_MAX, dir_record->i_ino, DT_UNKNOWN);
-        //ctx指针移动
         ctx->pos += sizeof(struct simple_dir_record);
         dir_record++;
     }
@@ -166,8 +173,6 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
     inode->i_op = &simple_iops;
     inode->i_atime = inode->i_ctime = inode->i_mtime = CURRENT_TIME;
 
-    inode->i_fop = &simple_fops;
-
     //设置inode编号
     struct simple_superblock *simple_sb = (struct simple_superblock *)sb->s_fs_info;
     inode->i_ino = simple_sb->s_inodecount++;
@@ -176,7 +181,18 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
     struct simple_inode *simple_inode = kmem_cache_alloc(simplefs_inode_cache, GFP_KERNEL);
     inode->i_private = simple_inode;
     simple_inode->i_ino = inode->i_ino;  //inode 编号
-    simple_inode->i_type = SIMPLE_FILE_TYPE_FILE;
+    if(S_ISREG(mode)){  //普通文件
+        inode->i_fop = &simple_fops;
+        simple_inode->i_type = SIMPLE_FILE_TYPE_FILE;
+        simple_inode->file_size = 0;
+    }else if(S_ISDIR(mode)){  //目录文件
+        inode->i_fop = &simple_dops;
+        simple_inode->i_type = SIMPLE_FILE_TYPE_DIR;
+        simple_inode->file_size = 4096;
+        simple_inode->dir_child_count = 0;
+        i_size_write(inode, SIMPLE_BLOCK_SIZE);
+    }
+    
     // simple_inode->file_size = 4096;
 
     //获取data block
@@ -195,9 +211,11 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
     //读取父inode对应的data block，往里面写入目录项
     struct buffer_head *bh = sb_bread(sb, parent_dir_inode->data_block_num + SIMPLE_DATA_BLOCK_BASE);
     struct simple_dir_record *dir_contents = (struct simple_dir_record *)bh->b_data;  //获取block的位置，目录项的起始地址
+
     dir_contents += parent_dir_inode->dir_child_count - 1;  //新目录项的起始地址
     strcpy(dir_contents->filename, dentry->d_name.name);  //写入文件名
     dir_contents->i_ino = simple_inode->i_ino; //写入索引节点编号
+
     mark_buffer_dirty(bh);  //标记buffer_head为脏
     sync_dirty_buffer(bh);  //往磁盘写入脏数据
     brelse(bh);
@@ -205,7 +223,7 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
     //获取磁盘上父inode的存储数据结构
     bh = sb_bread(sb, SIMPLE_INODE_BLOCK_BASE + inode->i_ino);
     struct simple_inode *parent_dir_inode_disk = (struct simple_inode *)bh->b_data;
-    //写入数据
+    //写入child count计数
     parent_dir_inode_disk->dir_child_count = parent_dir_inode->dir_child_count;
     mark_buffer_dirty(bh);
     sync_dirty_buffer(bh);
@@ -213,11 +231,10 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
 
     // dir/inode
     inode_init_owner(inode, dir, mode);
-    //这样子 lookup 函数可以在父目录看到新创建的inode信息
+    //加入到父dentry的hash表
     d_add(dentry, inode);
 
     // d_instantiate(dentry, inode);
-
     return 0;    
 }
 
@@ -229,7 +246,6 @@ static int simplefs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 
 //chdir的时候必须要有这个函数，但是不会被调用
 struct dentry *simplefs_lookup(struct inode *parent, struct dentry *child, unsigned int flags){
-    printk("lookup called\n");
     return NULL;
 }
 
@@ -260,6 +276,7 @@ static int simplefs_fill_super(struct super_block *sb, void *data, int silent){
     bh = sb_bread(sb, SIMPLE_INODE_BLOCK_BASE);
     struct simple_inode *root_dinode = (struct simple_inode *)bh->b_data;
     root_inode->i_private = root_dinode;
+    i_size_write(root_inode, SIMPLE_BLOCK_SIZE);
 
     //创建根目录
     sb->s_root = d_make_root(root_inode);
