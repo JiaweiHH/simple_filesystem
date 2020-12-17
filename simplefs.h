@@ -32,6 +32,7 @@ struct simple_inode{
     int i_ino;  //inode编号
     int i_type;  //文件类型，目录或普通文件
     int dir_child_count;  //节点下的文件数量
+    int file_size;  //文件大小，目录只有一个块大小
     // unsigned short i_blockmap[SIMPLE_PER_FILE_BLOCK];  //暂时不用
     int data_block_num;  //目前一个文件只有一个数据块
 };

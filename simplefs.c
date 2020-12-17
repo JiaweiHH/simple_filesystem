@@ -16,8 +16,15 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
 /* dir operations */
 static int simplefs_iterate(struct file *filp, struct dir_context *ctx);
 
+/* file operations */
+static ssize_t simplefs_write(struct file * filp, const char __user * buf, size_t len, loff_t * ppos);
+static ssize_t simplefs_read(struct file * filp, char __user * buf, size_t len, loff_t * ppos); //读写文件本质操作就是移动文件偏移量，copy 文件数据
+
 //普通文件操作
-static struct file_operations simple_fops;
+static struct file_operations simple_fops = {
+    .write = simplefs_write,
+    .read = simplefs_read,
+};
 
 static struct inode_operations simple_iops = {
     // .lookup = simple_lookup,
@@ -25,6 +32,7 @@ static struct inode_operations simple_iops = {
     .mkdir = simplefs_mkdir,  //创建目录
     .create = simplefs_create,  //创建一个文件或者目录
 };
+
 static struct super_operations simple_sops;
 
 //目录操作
@@ -33,7 +41,80 @@ static struct file_operations simple_dops = {
     .iterate = simplefs_iterate,
 };
 
+/* ==========file_operations========== */
+
+/*
+ * 读取文件。如果以此读取没有读完整个len长度则会继续调用，
+ * 因此需要判断 *ppos+len > file_size，以及 *ppos >= file_size
+ */
+static ssize_t simplefs_read(struct file * filp, char __user * buf, size_t len, loff_t * ppos){
+    //获取相关数据结构
+    printk("read called. 准备读取 %d 字节数据，文件偏移: %lld\n", len, *ppos);
+    struct inode *inode = filp->f_inode;
+    struct super_block *sb = inode->i_sb;
+    struct simple_inode *simple_inode = (struct simple_inode *)inode->i_private;
+    if(*ppos >= simple_inode->file_size){
+        printk("error. file_size: %d, ppos: %lld\n", simple_inode->file_size, *ppos);
+        return 0;
+    }
+    
+    //读取数据
+    struct buffer_head *bh = sb_bread(sb, simple_inode->data_block_num + SIMPLE_DATA_BLOCK_BASE);
+    char *buffer = (char *)bh->b_data;
+    buffer += *ppos;
+    len = min(len, simple_inode->file_size - *ppos);  //修改读取文件长度，防止越界
+    if(copy_to_user(buf, buffer, min(len, simple_inode->file_size - *ppos)))
+        return -EFAULT;
+    *ppos += len;
+
+    //更新inode文件访问时间
+    inode->i_atime = CURRENT_TIME;
+    return len;
+}
+
+/*
+ * 写文件
+ * filp: 要写的文件, buf: 用户空间准备写入的数据, len: 数据长度, ppos: 文件偏移量
+ */
+static ssize_t simplefs_write(struct file * filp, const char __user * buf, size_t len, loff_t * ppos){
+    printk("write called\n");
+
+    //获取相关数据结构
+    struct inode *inode = filp->f_inode;
+    struct super_block *sb = inode->i_sb;
+    struct simple_inode *simple_inode = (struct simple_inode *)inode->i_private;  //内存中的磁盘上的 inode 结构体
+    struct buffer_head *bh = sb_bread(sb, simple_inode->data_block_num + SIMPLE_DATA_BLOCK_BASE);
+    char *buffer = (char *)bh->b_data;  //buffer 为指向data block的指针
+
+    //开始 write 操作
+    buffer += *ppos;  //buffer 指针向后移动到偏移量的位置
+    if(copy_from_user(buffer, buf, len))  //写数据到 buffer
+        return -EFAULT;
+    *ppos += len;
+    simple_inode->file_size = *ppos;
+    mark_buffer_dirty(bh);  //标记buffer_head为脏
+    sync_dirty_buffer(bh);  //往磁盘写入脏数据
+
+    //更新inode文件数据和属性修改时间
+    inode->i_mtime = inode->i_ctime = CURRENT_TIME;
+
+    //更新磁盘上的 simple_inode 文件大小数据
+    bh = sb_bread(sb, simple_inode->i_ino + SIMPLE_INODE_BLOCK_BASE);
+    struct simple_inode *simple_inode_disk = (struct simple_inode *)bh->b_data;
+    simple_inode_disk->file_size = simple_inode->file_size;  //内存中的 simple_inode 和磁盘上的数据不同步
+    mark_buffer_dirty(bh);  //标记buffer_head为脏
+    sync_dirty_buffer(bh);  //往磁盘写入脏数据
+
+    brelse(bh);
+    return len;
+}
+
 /* ==========dir_operations========== */
+
+/*
+ * 遍历目录项
+ * filp: 目录文件, ctx: 存储目录项内容
+ */
 static int simplefs_iterate(struct file *filp, struct dir_context *ctx){
     printk("iterate called\n");
 
@@ -42,8 +123,9 @@ static int simplefs_iterate(struct file *filp, struct dir_context *ctx){
     struct simple_inode *simple_inode = (struct simple_inode *)inode->i_private;
 
     //ctx的指针需要从0开始
-    if(ctx->pos)
+    if(ctx->pos){
         return 0;
+    }
 
     //判断是不是目录
     if(simple_inode->i_type != SIMPLE_FILE_TYPE_DIR){
@@ -66,15 +148,16 @@ static int simplefs_iterate(struct file *filp, struct dir_context *ctx){
     }
 
     brelse(bh);
-
     return 0;
 }
 
 /* ==========inode_operations========== */
 
-//dir父节点，dentry当前创建的文件的dentry
+/*
+ * 创建 inode，创建文件的时候只需创建一个inode就可以了
+ * dir: 父节点, dentry: 当前创建的文件的dentry
+ */
 static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool excl){
-    printk("create 调用了\n");
     struct super_block *sb = dir->i_sb;
 
     //分配一个inode
@@ -82,6 +165,8 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
     inode->i_sb = sb;
     inode->i_op = &simple_iops;
     inode->i_atime = inode->i_ctime = inode->i_mtime = CURRENT_TIME;
+
+    inode->i_fop = &simple_fops;
 
     //设置inode编号
     struct simple_superblock *simple_sb = (struct simple_superblock *)sb->s_fs_info;
@@ -92,6 +177,7 @@ static int simplefs_create(struct inode *dir, struct dentry *dentry, umode_t mod
     inode->i_private = simple_inode;
     simple_inode->i_ino = inode->i_ino;  //inode 编号
     simple_inode->i_type = SIMPLE_FILE_TYPE_FILE;
+    // simple_inode->file_size = 4096;
 
     //获取data block
     int i;
